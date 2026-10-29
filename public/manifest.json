@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "DevLens — Bug & State Reporter",
+  "version": "0.1.0",
+  "description": "Capture browser errors locally and draft a structured bug report.",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*",
+    "https://api.openai.com/*",
+    "http://localhost:11434/*"
+  ],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "action": {
+    "default_title": "Open DevLens",
+    "default_popup": "popup.html"
+  },
+  "commands": {
+    "capture-bug-report": {
+      "suggested_key": {
+        "default": "Alt+Shift+D"
+      },
+      "description": "Start DevLens capture on the active page"
+    }
+  }
+}

@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DevLens</title>
+  </head>
+  <body>
+    <main class="panel">
+      <header class="heading">
+        <div class="brand-mark" aria-hidden="true">D</div>
+        <div>
+          <p class="eyebrow">BUG &amp; STATE REPORTER</p>
+          <h1>DevLens</h1>
+        </div>
+      </header>
+
+      <p class="intro">Start capture before reproducing an issue. DevLens can keep capturing startup errors and failed fetch/XHR requests across page reloads.</p>
+
+      <div class="privacy-note">
+        <span class="privacy-dot" aria-hidden="true"></span>
+        Capture is on demand and limited to the site you allow. Ollama keeps AI analysis on this device.
+      </div>
+
+      <section class="actions" aria-label="Capture controls">
+        <button id="start-capture" class="button button-primary" type="button" disabled>Start on this page</button>
+        <button id="generate-report" class="button button-secondary" type="button">Generate report</button>
+      </section>
+
+      <section class="ai-controls" aria-label="Optional AI report">
+        <label for="ai-provider">AI provider</label>
+        <select id="ai-provider">
+          <option value="ollama">Ollama (free, local)</option>
+          <option value="openai">OpenAI (API key required)</option>
+        </select>
+        <div id="openai-key-field" hidden>
+          <label for="openai-api-key">OpenAI API key (used once; not saved)</label>
+          <input id="openai-api-key" type="password" autocomplete="new-password" spellcheck="false" />
+        </div>
+        <button id="generate-ai-report" class="button button-secondary" type="button" disabled>Generate AI report</button>
+        <p id="ai-note" class="ai-note">Requires Ollama running locally with the qwen2.5:3b model. Diagnostics stay on this device.</p>
+      </section>
+
+      <p id="status" class="status" role="status" aria-live="polite">Ready when you are.</p>
+
+      <section id="report-section" class="report-section" hidden>
+        <div class="report-heading">
+          <h2>Draft report</h2>
+          <div class="report-actions">
+            <button id="copy-report" class="text-button" type="button">Copy</button>
+            <button id="download-report" class="text-button" type="button">Download</button>
+            <button id="download-screenshot" class="text-button" type="button" disabled>Save screenshot</button>
+          </div>
+        </div>
+        <textarea id="report" aria-label="Generated bug report" readonly spellcheck="false"></textarea>
+        <div id="screenshot-preview" class="screenshot-preview" hidden>
+          <p>Webpage screenshot with DevLens diagnostics appended (stored locally; not a Chrome DevTools screenshot)</p>
+          <img id="screenshot" alt="Captured browser viewport" />
+        </div>
+      </section>
+
+      <p class="footnote">The first start asks permission for this site so capture can resume after reloads. Earlier browser-console history is not available. Review reports and screenshots before sharing; page text and request bodies are not collected.</p>
+    </main>
+    <script type="module" src="/src/popup.ts"></script>
+  </body>
+</html>
