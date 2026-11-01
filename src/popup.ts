@@ -85,6 +85,7 @@ declare global {
 }
 
 const startButton = document.querySelector<HTMLButtonElement>("#start-capture")!;
+const stopButton = document.querySelector<HTMLButtonElement>("#stop-capture")!;
 const generateButton = document.querySelector<HTMLButtonElement>("#generate-report")!;
 const generateAiButton = document.querySelector<HTMLButtonElement>("#generate-ai-report")!;
 const aiProvider = document.querySelector<HTMLSelectElement>("#ai-provider")!;
@@ -126,6 +127,16 @@ async function getStoredCaptures(tab: chrome.tabs.Tab): Promise<StoredCaptureSna
   return response.snapshots ?? [];
 }
 
+async function isCaptureActive(tab: chrome.tabs.Tab): Promise<boolean> {
+  const response = (await chrome.runtime.sendMessage({
+    type: "devlens:get-capture-status",
+    tabId: tab.id,
+    origin: new URL(tab.url!).origin
+  })) as { ok?: boolean; active?: boolean; error?: string } | undefined;
+  if (!response?.ok) throw new Error(response?.error ?? "Could not check capture status.");
+  return response.active === true;
+}
+
 async function startCapture() {
   startButton.disabled = true;
   try {
@@ -141,6 +152,8 @@ async function startCapture() {
     if (!response?.ok) throw new Error(response?.error ?? "Could not start page-load capture.");
     latestReport = undefined;
     generateAiButton.disabled = false;
+    startButton.hidden = true;
+    stopButton.hidden = false;
     setStatus("DevLens is monitoring this tab and will resume after reloads. Reproduce the issue, then generate a report.");
     generateButton.disabled = false;
   } catch (error) {
@@ -150,13 +163,34 @@ async function startCapture() {
   }
 }
 
+async function stopCapture() {
+  stopButton.disabled = true;
+  try {
+    const tab = activeTab ?? (await getActiveTab());
+    const response = (await chrome.runtime.sendMessage({
+      type: "devlens:stop-capture",
+      tabId: tab.id
+    })) as { ok?: boolean; error?: string } | undefined;
+    if (!response?.ok) throw new Error(response?.error ?? "Could not stop page-load capture.");
+    startButton.hidden = false;
+    stopButton.hidden = true;
+    latestReport = undefined;
+    setStatus("Monitoring stopped. Captured diagnostics were kept; generate a report to review them.");
+    await refreshCaptureStatus();
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "Could not stop capture.", true);
+  } finally {
+    stopButton.disabled = false;
+  }
+}
+
 async function refreshCaptureStatus() {
   startButton.disabled = true;
   generateButton.disabled = true;
   generateAiButton.disabled = true;
   try {
     const tab = await getActiveTab();
-    const [mainResults, errorResults, storedSnapshots] = await Promise.all([
+    const [mainResults, errorResults, storedSnapshots, captureActive] = await Promise.all([
       chrome.scripting.executeScript({
         target: { tabId: tab.id!, allFrames: true },
         world: "MAIN",
@@ -174,8 +208,11 @@ async function refreshCaptureStatus() {
           errors: window.__devLensIsolatedErrors?.errors.length ?? 0
         })
       }),
-      getStoredCaptures(tab)
+      getStoredCaptures(tab),
+      isCaptureActive(tab)
     ]);
+    startButton.hidden = captureActive;
+    stopButton.hidden = !captureActive;
     const mainCaptures = mainResults.flatMap(({ result }) => (result?.started ? [result] : []));
     const errorCaptures = errorResults.flatMap(({ result }) => (result?.startedAt ? [result] : []));
     if (!mainCaptures.length && !errorCaptures.length && !storedSnapshots.length) {
@@ -185,6 +222,12 @@ async function refreshCaptureStatus() {
 
     generateButton.disabled = false;
     generateAiButton.disabled = false;
+    if (!captureActive) {
+      setStatus(
+        `Monitoring stopped. Captured diagnostics are available${storedSnapshots.length ? ` (${storedSnapshots.length} snapshots)` : ""}; generate a report to review them.`
+      );
+      return;
+    }
     if (!mainCaptures.length && !errorCaptures.length) {
       setStatus(`Page-load capture data is available (${storedSnapshots.length} snapshots). Generate a report to review it.`);
       return;
@@ -867,6 +910,7 @@ function formatReport(
 }
 
 startButton.addEventListener("click", () => void startCapture());
+stopButton.addEventListener("click", () => void stopCapture());
 generateButton.addEventListener("click", () => void generateReport());
 generateAiButton.addEventListener("click", () => void generateAiReport());
 aiProvider.addEventListener("change", updateAiProvider);

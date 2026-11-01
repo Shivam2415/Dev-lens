@@ -137,21 +137,22 @@ async function startCapture(tabId: number, url: string) {
   }
 }
 
-async function saveCaptureSnapshot(snapshot: CaptureSnapshot, sender: chrome.runtime.MessageSender): Promise<void> {
-  const tabId = sender.tab?.id;
-  const frameId = sender.frameId;
-  if (tabId === undefined || frameId === undefined || !isHttpOrigin(snapshot.origin)) {
+async function persistCaptureSnapshot(
+  snapshot: CaptureSnapshot,
+  tabId: number,
+  frameId: number
+): Promise<void> {
+  if (!isHttpOrigin(snapshot.origin)) {
     throw new Error("DevLens received a capture snapshot without a valid page context.");
   }
-  const senderUrl = sender.url;
-  let senderOrigin: string;
+  let snapshotOrigin: string;
   try {
-    senderOrigin = senderUrl ? new URL(senderUrl).origin : "";
+    snapshotOrigin = new URL(snapshot.url).origin;
   } catch {
-    senderOrigin = "";
+    snapshotOrigin = "";
   }
-  if (senderOrigin !== snapshot.origin) {
-    throw new Error("DevLens rejected a capture snapshot from a different page origin.");
+  if (snapshotOrigin !== snapshot.origin) {
+    throw new Error("DevLens rejected a snapshot with an invalid page URL.");
   }
 
   const active = await chrome.storage.session.get(`${activeCapturePrefix}${tabId}`);
@@ -188,6 +189,82 @@ async function saveCaptureSnapshot(snapshot: CaptureSnapshot, sender: chrome.run
   return operation;
 }
 
+async function saveCaptureSnapshot(snapshot: CaptureSnapshot, sender: chrome.runtime.MessageSender): Promise<void> {
+  const tabId = sender.tab?.id;
+  const frameId = sender.frameId;
+  if (tabId === undefined || frameId === undefined || !isHttpOrigin(snapshot.origin)) {
+    throw new Error("DevLens received a capture snapshot without a valid page context.");
+  }
+  let senderOrigin: string;
+  try {
+    senderOrigin = sender.url ? new URL(sender.url).origin : "";
+  } catch {
+    senderOrigin = "";
+  }
+  if (senderOrigin !== snapshot.origin) {
+    throw new Error("DevLens rejected a capture snapshot from a different page origin.");
+  }
+  return persistCaptureSnapshot(snapshot, tabId, frameId);
+}
+
+async function stopCapture(tabId: number): Promise<void> {
+  const key = `${activeCapturePrefix}${tabId}`;
+  const active = await chrome.storage.session.get(key);
+  const origin = (active[key] as { origin?: string } | undefined)?.origin;
+  if (!origin) throw new Error("Capture is not active for this tab.");
+
+  const [mainResults, isolatedResults] = await Promise.all([
+    chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      world: "MAIN",
+      func: () => (window as Window & { __devLensStopCapture?: () => unknown }).__devLensStopCapture?.()
+    }),
+    chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      world: "ISOLATED",
+      func: () =>
+        (window as Window & { __devLensStopIsolatedCapture?: () => unknown }).__devLensStopIsolatedCapture?.()
+    })
+  ]);
+  const finalSnapshots: Array<{ snapshot: CaptureSnapshot; frameId: number }> = [];
+  for (const { result, frameId } of mainResults) {
+    if (isCaptureSnapshot(result, "main", origin)) finalSnapshots.push({ snapshot: result, frameId });
+  }
+  for (const { result, frameId } of isolatedResults) {
+    if (isCaptureSnapshot(result, "isolated", origin)) finalSnapshots.push({ snapshot: result, frameId });
+  }
+
+  await Promise.all(
+    finalSnapshots.map(({ snapshot, frameId }) => persistCaptureSnapshot(snapshot, tabId, frameId))
+  );
+  await chrome.storage.session.remove(key);
+  await updateCaptureBridgeRegistration();
+}
+
+function isCaptureSnapshot(
+  value: unknown,
+  expectedWorld: CaptureSnapshot["world"],
+  expectedOrigin: string
+): value is CaptureSnapshot {
+  if (typeof value !== "object" || value === null) return false;
+  const snapshot = value as Partial<CaptureSnapshot>;
+  let urlOrigin: string;
+  try {
+    urlOrigin = typeof snapshot.url === "string" ? new URL(snapshot.url).origin : "";
+  } catch {
+    urlOrigin = "";
+  }
+  return (
+    snapshot.world === expectedWorld &&
+    snapshot.origin === expectedOrigin &&
+    urlOrigin === expectedOrigin &&
+    typeof snapshot.title === "string" &&
+    typeof snapshot.startedAt === "string" &&
+    Array.isArray(snapshot.errors) &&
+    (snapshot.requests === undefined || Array.isArray(snapshot.requests))
+  );
+}
+
 chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
   if (typeof message !== "object" || message === null || !("type" in message)) return;
   const request = message as { type: string; [key: string]: unknown };
@@ -218,6 +295,36 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
       (error: unknown) =>
         sendResponse({ ok: false, error: error instanceof Error ? error.message : "Could not start capture." })
     );
+    return true;
+  }
+
+  if (request.type === "devlens:stop-capture") {
+    const tabId = request.tabId;
+    if (typeof tabId !== "number") {
+      sendResponse({ ok: false, error: "DevLens received an invalid capture stop request." });
+      return;
+    }
+    void stopCapture(tabId).then(
+      () => sendResponse({ ok: true }),
+      (error: unknown) =>
+        sendResponse({ ok: false, error: error instanceof Error ? error.message : "Could not stop capture." })
+    );
+    return true;
+  }
+
+  if (request.type === "devlens:get-capture-status") {
+    const tabId = request.tabId;
+    const origin = request.origin;
+    if (typeof tabId !== "number" || typeof origin !== "string") {
+      sendResponse({ ok: false, error: "DevLens received an invalid capture status request." });
+      return;
+    }
+    void chrome.storage.session.get(`${activeCapturePrefix}${tabId}`).then((stored) => {
+      const active = stored[`${activeCapturePrefix}${tabId}`] as { origin?: string } | undefined;
+      sendResponse({ ok: true, active: active?.origin === origin });
+    }).catch((error: unknown) => {
+      sendResponse({ ok: false, error: error instanceof Error ? error.message : "Could not check capture status." });
+    });
     return true;
   }
 

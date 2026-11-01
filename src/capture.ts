@@ -36,6 +36,16 @@ declare global {
   interface Window {
     __devLensCapture?: CaptureState;
     __devLensCaptureInstalled?: boolean;
+    __devLensStopCapture?: () => {
+      world: "main";
+      origin: string;
+      url: string;
+      title: string;
+      startedAt: string;
+      errors: CapturedError[];
+      requests: CapturedRequest[];
+      lastInteraction?: ElementContext[];
+    } | undefined;
   }
 }
 
@@ -48,7 +58,14 @@ if (!window.__devLensCaptureInstalled) {
   };
 
   const state = window.__devLensCapture;
+  let active = true;
+  const abortController = new AbortController();
+  const originalConsoleErrorDescriptor = Object.getOwnPropertyDescriptor(console, "error");
+  const originalFetchDescriptor = Object.getOwnPropertyDescriptor(window, "fetch");
+  const originalOpenDescriptor = Object.getOwnPropertyDescriptor(XMLHttpRequest.prototype, "open");
+  const originalSendDescriptor = Object.getOwnPropertyDescriptor(XMLHttpRequest.prototype, "send");
   const publishSnapshot = () => {
+    if (!active) return;
     window.postMessage(
       {
         source: "devlens",
@@ -71,11 +88,13 @@ if (!window.__devLensCaptureInstalled) {
     message: string,
     details: Omit<CapturedError, "message" | "timestamp"> = { kind: "runtime" }
   ) => {
+    if (!active) return;
     state.errors.push({ message: message.slice(0, 500), timestamp: new Date().toISOString(), ...details });
     state.errors = state.errors.slice(-100);
     publishSnapshot();
   };
   const addRequest = (request: CapturedRequest) => {
+    if (!active) return;
     state.requests.push(request);
     state.requests = state.requests.slice(-100);
     publishSnapshot();
@@ -133,30 +152,35 @@ if (!window.__devLensCaptureInstalled) {
     }
     pageConsoleError.apply(console, args);
   };
+  const captureConsoleErrorGetter = () => captureConsoleError;
   Object.defineProperty(console, "error", {
     configurable: true,
     enumerable: true,
-    get: () => captureConsoleError,
+    get: captureConsoleErrorGetter,
     set: (value: typeof console.error) => {
       if (value !== captureConsoleError) pageConsoleError = value;
     }
   });
 
-  window.addEventListener(
-    "error",
-    (event: ErrorEvent) => {
-      if (!event.message) return;
-      addRuntimeError(
-        event.message,
-        event.filename ? safeUrl(event.filename) : undefined,
-        event.lineno > 0 ? event.lineno : undefined,
-        event.colno > 0 ? event.colno : undefined
-      );
-    },
-    true
-  );
+  const onError = (event: ErrorEvent) => {
+    if (!event.message) return;
+    addRuntimeError(
+      event.message,
+      event.filename ? safeUrl(event.filename) : undefined,
+      event.lineno > 0 ? event.lineno : undefined,
+      event.colno > 0 ? event.colno : undefined
+    );
+  };
+  window.addEventListener("error", onError, { capture: true, signal: abortController.signal });
   const originalOnError = window.onerror;
-  window.onerror = function (message, source, line, column, error) {
+  const captureOnError = function (
+    this: Window,
+    message: string | Event,
+    source?: string,
+    line?: number,
+    column?: number,
+    error?: Error
+  ) {
     const errorMessage =
       typeof message === "string" ? message : error?.message || "Uncaught script error";
     addRuntimeError(
@@ -170,39 +194,41 @@ if (!window.__devLensCaptureInstalled) {
     }
     return false;
   };
-  window.addEventListener("unhandledrejection", (event) => {
+  window.onerror = captureOnError;
+  const onUnhandledRejection = (event: PromiseRejectionEvent) => {
     const reason = event.reason;
     addError(reason instanceof Error ? reason.message : String(reason ?? "Unhandled promise rejection"), {
       kind: "promise"
     });
-  }, true);
-  window.addEventListener(
-    "click",
-    (event) => {
-      const target = event.target;
-      if (!(target instanceof Element)) return;
-      const hierarchy: ElementContext[] = [];
-      let element: Element | null = target;
-      while (element && hierarchy.length < 5) {
-        hierarchy.push({
-          tag: element.tagName.toLowerCase(),
-          ...(element.id ? { id: element.id.slice(0, 100) } : {}),
-          ...(element.getAttribute("role") ? { role: element.getAttribute("role")!.slice(0, 50) } : {}),
-          ...(element.getAttribute("data-testid")
-            ? { testId: element.getAttribute("data-testid")!.slice(0, 100) }
-            : {}),
-          classes: Array.from(element.classList).slice(0, 5).map((name) => name.slice(0, 50))
-        });
-        element = element.parentElement;
-      }
-      state.lastInteraction = hierarchy;
-      publishSnapshot();
-    },
-    true
-  );
+  };
+  window.addEventListener("unhandledrejection", onUnhandledRejection, {
+    capture: true,
+    signal: abortController.signal
+  });
+  const onClick = (event: MouseEvent) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const hierarchy: ElementContext[] = [];
+    let element: Element | null = target;
+    while (element && hierarchy.length < 5) {
+      hierarchy.push({
+        tag: element.tagName.toLowerCase(),
+        ...(element.id ? { id: element.id.slice(0, 100) } : {}),
+        ...(element.getAttribute("role") ? { role: element.getAttribute("role")!.slice(0, 50) } : {}),
+        ...(element.getAttribute("data-testid")
+          ? { testId: element.getAttribute("data-testid")!.slice(0, 100) }
+          : {}),
+        classes: Array.from(element.classList).slice(0, 5).map((name) => name.slice(0, 50))
+      });
+      element = element.parentElement;
+    }
+    state.lastInteraction = hierarchy;
+    publishSnapshot();
+  };
+  window.addEventListener("click", onClick, { capture: true, signal: abortController.signal });
 
   const originalFetch = window.fetch;
-  window.fetch = function (...args: Parameters<typeof fetch>) {
+  const captureFetch = function (this: Window, ...args: Parameters<typeof fetch>) {
     const input = args[0];
     const request = input instanceof Request ? input : undefined;
     const url = safeUrl(typeof input === "string" ? input : request?.url ?? input.toString());
@@ -225,10 +251,12 @@ if (!window.__devLensCaptureInstalled) {
       }
     );
   };
+  window.fetch = captureFetch;
 
   const xhrUrls = new WeakMap<XMLHttpRequest, { method: string; url: string }>();
   const originalOpen = XMLHttpRequest.prototype.open;
-  XMLHttpRequest.prototype.open = function (
+  const captureOpen = function (
+    this: XMLHttpRequest,
     method: string,
     url: string | URL,
     ...rest: [async?: boolean, username?: string | null, password?: string | null]
@@ -237,8 +265,9 @@ if (!window.__devLensCaptureInstalled) {
     if (rest.length === 0) return originalOpen.call(this, method, url, true);
     return originalOpen.call(this, method, url, rest[0] ?? true, rest[1], rest[2]);
   };
+  XMLHttpRequest.prototype.open = captureOpen;
   const originalSend = XMLHttpRequest.prototype.send;
-  XMLHttpRequest.prototype.send = function (...args: Parameters<XMLHttpRequest["send"]>) {
+  const captureSend = function (this: XMLHttpRequest, ...args: Parameters<XMLHttpRequest["send"]>) {
     this.addEventListener(
       "loadend",
       () => {
@@ -252,12 +281,13 @@ if (!window.__devLensCaptureInstalled) {
           });
         }
       },
-      { once: true }
+      { once: true, signal: abortController.signal }
     );
     return originalSend.apply(this, args);
   };
+  XMLHttpRequest.prototype.send = captureSend;
 
-  window.addEventListener("message", (event: MessageEvent<unknown>) => {
+  const onMessage = (event: MessageEvent<unknown>) => {
     if (
       event.source === window &&
       event.origin === window.location.origin &&
@@ -270,7 +300,52 @@ if (!window.__devLensCaptureInstalled) {
     ) {
       publishSnapshot();
     }
-  });
-  window.addEventListener("pagehide", publishSnapshot, { once: true });
+  };
+  window.addEventListener("message", onMessage, { signal: abortController.signal });
+  window.addEventListener("pagehide", publishSnapshot, { once: true, signal: abortController.signal });
   publishSnapshot();
+
+  window.__devLensStopCapture = () => {
+    const snapshot = {
+      world: "main" as const,
+      origin: window.location.origin,
+      url: `${window.location.origin}${window.location.pathname}`,
+      title: document.title,
+      startedAt: state.startedAt,
+      errors: state.errors,
+      requests: state.requests,
+      ...(state.lastInteraction ? { lastInteraction: state.lastInteraction } : {})
+    };
+    active = false;
+    abortController.abort();
+    if (window.onerror === captureOnError) window.onerror = originalOnError;
+    if (Object.getOwnPropertyDescriptor(console, "error")?.get === captureConsoleErrorGetter) {
+      if (originalConsoleErrorDescriptor) {
+        Object.defineProperty(
+          console,
+          "error",
+          "value" in originalConsoleErrorDescriptor
+            ? { ...originalConsoleErrorDescriptor, value: pageConsoleError }
+            : originalConsoleErrorDescriptor
+        );
+      } else {
+        delete (console as { error?: typeof console.error }).error;
+      }
+    }
+    if (window.fetch === captureFetch) {
+      if (originalFetchDescriptor) Object.defineProperty(window, "fetch", originalFetchDescriptor);
+      else window.fetch = originalFetch;
+    }
+    if (XMLHttpRequest.prototype.open === captureOpen) {
+      if (originalOpenDescriptor) Object.defineProperty(XMLHttpRequest.prototype, "open", originalOpenDescriptor);
+      else XMLHttpRequest.prototype.open = originalOpen;
+    }
+    if (XMLHttpRequest.prototype.send === captureSend) {
+      if (originalSendDescriptor) Object.defineProperty(XMLHttpRequest.prototype, "send", originalSendDescriptor);
+      else XMLHttpRequest.prototype.send = originalSend;
+    }
+    window.__devLensCaptureInstalled = false;
+    window.__devLensStopCapture = undefined;
+    return snapshot;
+  };
 }

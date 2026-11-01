@@ -3,6 +3,12 @@
   "name": "DevLens — Bug & State Reporter",
   "version": "0.1.0",
   "description": "Capture browser errors locally and draft a structured bug report.",
+  "icons": {
+    "16": "icons/devlens-16.png",
+    "32": "icons/devlens-32.png",
+    "48": "icons/devlens-48.png",
+    "128": "icons/devlens-128.png"
+  },
   "permissions": ["activeTab", "scripting", "storage"],
   "optional_host_permissions": [
     "http://*/*",
@@ -15,6 +21,10 @@
   },
   "action": {
     "default_title": "Open DevLens",
+    "default_icon": {
+      "16": "icons/devlens-16.png",
+      "32": "icons/devlens-32.png"
+    },
     "default_popup": "popup.html"
   },
   "commands": {

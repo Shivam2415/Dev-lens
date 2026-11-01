@@ -33,16 +33,9 @@ textarea {
 }
 
 .brand-mark {
-  display: grid;
   width: 38px;
   height: 38px;
-  place-items: center;
-  border: 1px solid #8277ff;
-  border-radius: 12px;
-  color: #c1bbff;
-  font-size: 19px;
-  font-weight: 750;
-  background: linear-gradient(145deg, #302a60, #1a1c30);
+  object-fit: contain;
 }
 
 .eyebrow {
@@ -94,7 +87,7 @@ h1 {
 
 .actions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 9px;
   margin-top: 16px;
 }
@@ -125,6 +118,17 @@ h1 {
 
 .button-primary:hover:not(:disabled) {
   background: #7668f2;
+}
+
+.button-danger {
+  border-color: #633b43;
+  color: #ffd9df;
+  background: #3a2027;
+}
+
+.button-danger:hover:not(:disabled) {
+  border-color: #98505c;
+  background: #4a2730;
 }
 
 .button-secondary {
